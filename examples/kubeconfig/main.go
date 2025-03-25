@@ -23,6 +23,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/go-logr/logr"
 	"golang.org/x/sync/errgroup"
 
 	corev1 "k8s.io/api/core/v1"
@@ -33,12 +34,12 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
-	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	kubeconfigprovider "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
 )
 
@@ -66,57 +67,25 @@ func main() {
 	entryLog := ctrllog.Log.WithName("entrypoint")
 	ctx := ctrl.SetupSignalHandler()
 
-	// Create the kubeconfig provider
-	provider := kubeconfigprovider.New(
-		nil, // Will be set by mcmanager.New
-		kubeconfigprovider.Options{
-			Namespace:         namespace,
-			KubeconfigLabel:   kubeconfigLabel,
-			ConnectionTimeout: connectionTimeout,
-			CacheSyncTimeout:  cacheSyncTimeout,
-		},
-	)
+	// Create the kubeconfig provider with options
+	providerOpts := kubeconfigprovider.Options{
+		Namespace:         namespace,
+		KubeconfigLabel:   kubeconfigLabel,
+		ConnectionTimeout: connectionTimeout,
+		CacheSyncTimeout:  cacheSyncTimeout,
+	}
 
 	// Create the multicluster manager with the provider
+	provider := kubeconfigprovider.New(providerOpts)
 	mgr, err := mcmanager.New(ctrl.GetConfigOrDie(), provider, manager.Options{})
 	if err != nil {
 		entryLog.Error(err, "unable to create manager")
 		os.Exit(1)
 	}
 
-	// Set up a controller to list pods in each cluster
-	err = mgr.Add(mcreconcile.Func(
-		func(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-			log := ctrllog.Log.WithValues("cluster", req.ClusterName)
-			log.Info("Reconciling Pod")
-
-			cl, err := mgr.GetCluster(ctx, req.ClusterName)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-
-			// List pods in the default namespace
-			var pods corev1.PodList
-			if err := cl.GetClient().List(ctx, &pods, &client.ListOptions{
-				Namespace: "default",
-			}); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			log.Info("Listing pods in default namespace", "count", len(pods.Items))
-			for _, pod := range pods.Items {
-				log.Info("Found pod",
-					"namespace", pod.Namespace,
-					"name", pod.Name,
-					"status", pod.Status.Phase)
-			}
-
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-		},
-	).ToController("pod-lister", mgr))
-
-	if err != nil {
-		entryLog.Error(err, "unable to create pod lister controller")
+	// Add the pod lister controller
+	if err := mgr.Add(&podWatcher{manager: mgr}); err != nil {
+		entryLog.Error(err, "unable to add pod watcher")
 		os.Exit(1)
 	}
 
@@ -146,6 +115,65 @@ func main() {
 		entryLog.Error(err, "error running manager or provider")
 		os.Exit(1)
 	}
+}
+
+// podWatcher is a simple runnable that watches pods
+type podWatcher struct {
+	manager mcmanager.Manager
+}
+
+func (p *podWatcher) Start(ctx context.Context) error {
+	// Nothing to do here - we'll handle everything in Engage
+	return nil
+}
+
+func (p *podWatcher) Engage(ctx context.Context, clusterName string, cl cluster.Cluster) error {
+	log := ctrllog.Log.WithName("pod-watcher").WithValues("cluster", clusterName)
+	log.Info("Engaging cluster")
+
+	// Start a goroutine to periodically list pods
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		// Initial list
+		if err := listPods(ctx, cl, clusterName, log); err != nil {
+			log.Error(err, "Failed to list pods")
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				log.Info("Context done, stopping pod watcher")
+				return
+			case <-ticker.C:
+				if err := listPods(ctx, cl, clusterName, log); err != nil {
+					log.Error(err, "Failed to list pods")
+				}
+			}
+		}
+	}()
+
+	return nil
+}
+
+// listPods lists pods in the default namespace
+func listPods(ctx context.Context, cl cluster.Cluster, clusterName string, log logr.Logger) error {
+	var pods corev1.PodList
+	if err := cl.GetClient().List(ctx, &pods, &client.ListOptions{
+		Namespace: "default",
+	}); err != nil {
+		return err
+	}
+
+	log.Info("Pods in default namespace", "count", len(pods.Items))
+	for _, pod := range pods.Items {
+		log.Info("Pod",
+			"name", pod.Name,
+			"status", pod.Status.Phase)
+	}
+
+	return nil
 }
 
 func ignoreCanceled(err error) error {
