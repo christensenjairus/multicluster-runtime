@@ -42,6 +42,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 
 const (
@@ -80,6 +82,21 @@ type Options struct {
 	CacheSyncTimeout time.Duration
 }
 
+// Provider defines an interface for a kubecofnig-based cluster provider
+type Provider interface {
+	// Get returns a cluster by name
+	Get(ctx context.Context, name string) (cluster.Cluster, error)
+
+	// Run starts the provider
+	Run(ctx context.Context, mgr mcmanager.Manager) error
+
+	// IndexField indexes a field on all clusters
+	IndexField(ctx context.Context, obj client.Object, field string, extractValue client.IndexerFunc) error
+
+	// IsReady returns a channel that will be closed when the provider is ready to start
+	IsReady() <-chan struct{}
+}
+
 // KubeconfigProvider is a cluster provider that watches for secrets containing kubeconfig data
 // and engages clusters based on those kubeconfig.
 type KubeconfigProvider struct {
@@ -88,7 +105,7 @@ type KubeconfigProvider struct {
 	client      client.Client
 	Client      client.Client // For controller-runtime Reconciler interface
 	lock        sync.RWMutex
-	manager     KubeClusterManager
+	manager     mcmanager.Manager
 	clusters    map[string]cluster.Cluster
 	cancelFns   map[string]context.CancelFunc
 	indexers    []index
@@ -101,7 +118,7 @@ type KubeconfigProvider struct {
 var _ Provider = &KubeconfigProvider{}
 
 // New creates a new Kubeconfig Provider.
-func New(mgr KubeClusterManager, opts Options) *KubeconfigProvider {
+func New(mgr mcmanager.Manager, opts Options) *KubeconfigProvider {
 	// Set defaults
 	if opts.KubeconfigLabel == "" {
 		opts.KubeconfigLabel = DefaultKubeconfigSecretLabel
@@ -119,8 +136,8 @@ func New(mgr KubeClusterManager, opts Options) *KubeconfigProvider {
 	return &KubeconfigProvider{
 		opts:        opts,
 		log:         log.Log.WithName("kubeconfig-provider"),
-		client:      mgr.GetClient(),
-		Client:      mgr.GetClient(), // Set both client fields
+		client:      mgr.GetLocalManager().GetClient(),
+		Client:      mgr.GetLocalManager().GetClient(), // Set both client fields
 		clusters:    map[string]cluster.Cluster{},
 		cancelFns:   map[string]context.CancelFunc{},
 		seenHashes:  map[string]string{},
@@ -143,7 +160,7 @@ func (p *KubeconfigProvider) Get(_ context.Context, clusterName string) (cluster
 
 // Run starts the provider and blocks, watching for kubeconfig secrets.
 // It implements the Provider interface.
-func (p *KubeconfigProvider) Run(ctx context.Context, mgr KubeClusterManager) error {
+func (p *KubeconfigProvider) Run(ctx context.Context, mgr mcmanager.Manager) error {
 	p.log.Info("starting kubeconfig provider", "namespace", p.opts.Namespace, "label", p.opts.KubeconfigLabel)
 
 	// Set the manager
@@ -156,9 +173,9 @@ func (p *KubeconfigProvider) Run(ctx context.Context, mgr KubeClusterManager) er
 	})
 
 	// Wait for the controller-runtime cache to be ready before using it
-	if mgr != nil && mgr.GetCache() != nil {
+	if mgr != nil && mgr.GetLocalManager().GetCache() != nil {
 		p.log.Info("Waiting for controller-runtime cache to be ready")
-		if !mgr.GetCache().WaitForCacheSync(ctx) {
+		if !mgr.GetLocalManager().GetCache().WaitForCacheSync(ctx) {
 			return fmt.Errorf("timed out waiting for cache to sync")
 		}
 		p.log.Info("Controller-runtime cache is synced")
@@ -423,21 +440,12 @@ func (p *KubeconfigProvider) Disengage(ctx context.Context, clusterName string) 
 		p.lock.RUnlock()
 		return fmt.Errorf("cancel function for cluster %s not found", clusterName)
 	}
-
-	// Get manager reference while holding the read lock
-	mgr := p.manager
 	p.lock.RUnlock()
 
-	// Disengage from manager if available
-	if mgr != nil {
-		if err := mgr.Disengage(ctx, clusterName); err != nil {
-			log.Error(err, "Failed to disengage from manager")
-			// Continue with cleanup even if manager disengage fails
-		}
-	}
-
-	// Stop the cluster
+	// Cancel the context to trigger cleanup for this cluster
+	// This is the proper way to disengage a cluster - by canceling its context
 	cancelFn()
+	log.Info("Cancelled cluster context")
 
 	// Clean up our maps
 	p.lock.Lock()
@@ -635,7 +643,7 @@ func (p *KubeconfigProvider) syncSecretsInternal(ctx context.Context) error {
 
 // SetManager explicitly sets the manager for the provider
 // This should be called before any other operations
-func (p *KubeconfigProvider) SetManager(mgr KubeClusterManager) {
+func (p *KubeconfigProvider) SetManager(mgr mcmanager.Manager) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 

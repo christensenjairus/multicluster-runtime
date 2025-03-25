@@ -102,10 +102,10 @@ func main() {
 
 	// Now let's set up the multicluster part
 	// Create a MulticlusterReconciler that will be used by controllers and the provider
-	mcReconciler := kubeconfigprovider.NewMulticlusterReconciler(mgr.GetClient(), mgr.GetScheme())
+	mcReconciler := kubeconfigprovider.reconciler(mgr.GetClient(), mgr.GetScheme())
 
 	// Create a KubeconfigClusterManager that will manage multiple clusters
-	clusterManager := kubeconfigprovider.NewKubeconfigClusterManager(mgr, mcReconciler)
+	clusterManager := kubeconfigprovider.manager(mgr, mcReconciler)
 
 	// Create and configure the kubeconfig provider with the cluster manager
 	kubeconfigProvider := kubeconfigprovider.New(
