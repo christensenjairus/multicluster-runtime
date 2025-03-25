@@ -321,7 +321,7 @@ func (p *KubeconfigProvider) Engage(ctx context.Context, clusterName string, con
 
 	// Register the cluster with the manager if available
 	p.lock.RLock()
-	manager := p.manager
+	manager := p.Manager
 	p.lock.RUnlock()
 
 	if manager != nil {
