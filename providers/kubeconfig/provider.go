@@ -54,7 +54,7 @@ const (
 var _ multicluster.Provider = &Provider{}
 
 // New creates a new Kubeconfig Provider.
-func New(mgr mcmanager.Manager, opts Options) *Provider {
+func New(opts Options) *Provider {
 	// Set defaults
 	if opts.KubeconfigLabel == "" {
 		opts.KubeconfigLabel = DefaultKubeconfigSecretLabel
@@ -70,9 +70,6 @@ func New(mgr mcmanager.Manager, opts Options) *Provider {
 	}
 
 	var client client.Client
-	if mgr != nil {
-		client = mgr.GetLocalManager().GetClient()
-	}
 
 	return &Provider{
 		opts:        opts,
