@@ -122,9 +122,6 @@ func main() {
 	go func() {
 		setupLog.Info("starting kubeconfig provider")
 
-		// Set the manager first before doing anything else
-		kubeconfigProvider.SetManager(clusterManager)
-
 		// Run the provider - it will handle initial sync internally
 		err := kubeconfigProvider.Run(ctx, clusterManager)
 		if err != nil && !errors.Is(err, context.Canceled) {

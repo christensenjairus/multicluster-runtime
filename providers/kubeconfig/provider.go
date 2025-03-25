@@ -44,6 +44,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
 
 const (
@@ -105,7 +106,8 @@ type KubeconfigProvider struct {
 	client      client.Client
 	Client      client.Client // For controller-runtime Reconciler interface
 	lock        sync.RWMutex
-	manager     mcmanager.Manager
+	Manager     mcmanager.Manager
+	Reconciler  mcreconcile.Reconciler
 	clusters    map[string]cluster.Cluster
 	cancelFns   map[string]context.CancelFunc
 	indexers    []index
@@ -162,9 +164,6 @@ func (p *KubeconfigProvider) Get(_ context.Context, clusterName string) (cluster
 // It implements the Provider interface.
 func (p *KubeconfigProvider) Run(ctx context.Context, mgr mcmanager.Manager) error {
 	p.log.Info("starting kubeconfig provider", "namespace", p.opts.Namespace, "label", p.opts.KubeconfigLabel)
-
-	// Set the manager
-	p.SetManager(mgr)
 
 	// Signal that we're starting up (this doesn't mean clusters are ready, just that we're starting)
 	p.readyOnce.Do(func() {
@@ -641,15 +640,6 @@ func (p *KubeconfigProvider) syncSecretsInternal(ctx context.Context) error {
 	return nil
 }
 
-// SetManager explicitly sets the manager for the provider
-// This should be called before any other operations
-func (p *KubeconfigProvider) SetManager(mgr mcmanager.Manager) {
-	p.lock.Lock()
-	defer p.lock.Unlock()
-
-	p.manager = mgr
-	p.log.Info("Manager explicitly set for provider")
-}
 
 // IsReady returns a channel that will be closed when the provider is ready to start
 // This separates the readiness signal from the main function
