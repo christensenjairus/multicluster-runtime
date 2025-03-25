@@ -32,7 +32,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
+	// Import your controllers here <--------------------------------
 	"sigs.k8s.io/multicluster-runtime/examples/kubeconfig/controllers"
+
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	kubeconfigprovider "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
 )
