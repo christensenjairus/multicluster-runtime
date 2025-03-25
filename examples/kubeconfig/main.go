@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"golang.org/x/sync/errgroup"
 
 	corev1 "k8s.io/api/core/v1"
 
@@ -83,7 +82,16 @@ func main() {
 
 	// Create the multicluster manager with the provider
 	entryLog.Info("Creating manager")
-	mgr, err := mcmanager.New(ctrl.GetConfigOrDie(), provider, manager.Options{})
+
+	// Modify manager options to avoid waiting for cache sync
+	managerOpts := manager.Options{
+		// Don't block main thread on leader election
+		LeaderElection:          false,
+		LeaderElectionNamespace: namespace,
+		LeaderElectionID:        "multicluster-runtime-kubeconfig-leader",
+	}
+
+	mgr, err := mcmanager.New(ctrl.GetConfigOrDie(), provider, managerOpts)
 	if err != nil {
 		entryLog.Error(err, "unable to create manager")
 		os.Exit(1)
@@ -96,15 +104,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Starting everything
-	g, ctx := errgroup.WithContext(ctx)
+	// Start provider in a goroutine
+	entryLog.Info("Starting provider")
+	go func() {
+		err := provider.Run(ctx, mgr)
+		if err != nil && ctx.Err() == nil {
+			entryLog.Error(err, "Provider exited with error")
+		}
+	}()
 
-	// Add a timeout for waiting for the provider to be ready
+	// Wait for the provider to be ready with a short timeout
 	entryLog.Info("Waiting for provider to be ready")
 	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Wait for the provider to be ready before starting the manager
 	select {
 	case <-provider.IsReady():
 		entryLog.Info("Provider is ready")
@@ -112,23 +125,10 @@ func main() {
 		entryLog.Error(readyCtx.Err(), "Timeout waiting for provider to be ready, continuing anyway")
 	}
 
-	g.Go(func() error {
-		entryLog.Info("Starting provider")
-		err := provider.Run(ctx, mgr)
-		entryLog.Info("Provider exited", "error", err)
-		return ignoreCanceled(err)
-	})
-
-	g.Go(func() error {
-		entryLog.Info("Starting manager")
-		err := mgr.Start(ctx)
-		entryLog.Info("Manager exited", "error", err)
-		return ignoreCanceled(err)
-	})
-
-	entryLog.Info("Waiting for provider and manager to exit")
-	if err := g.Wait(); err != nil {
-		entryLog.Error(err, "error running manager or provider")
+	// Start the manager
+	entryLog.Info("Starting manager")
+	if err := mgr.Start(ctx); err != nil {
+		entryLog.Error(err, "Error running manager")
 		os.Exit(1)
 	}
 }
