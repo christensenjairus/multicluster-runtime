@@ -18,40 +18,29 @@ package main
 
 import (
 	"context"
-
 	"errors"
 	"flag"
 	"os"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
+	corev1 "k8s.io/api/core/v1"
+
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
-	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	kubeconfigprovider "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
-	// +kubebuilder:scaffold:imports
 )
-
-var (
-	scheme   = runtime.NewScheme()
-	setupLog = zap.New(zap.UseDevMode(true))
-)
-
-func init() {
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-
-	// TODO: add your CRDs here after you import them above
-	// utilruntime.Must(crdv1alpha1.AddToScheme(scheme))
-	// +kubebuilder:scaffold:scheme
-}
 
 func main() {
 	var namespace string
@@ -73,43 +62,13 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-
-	// Create a simple in-cluster config
-	config, err := ctrl.GetConfig()
-	if err != nil {
-		setupLog.Error(err, "unable to get kubernetes configuration")
-		os.Exit(1)
-	}
-
-	// Get the root context for the whole application
+	ctrllog.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	entryLog := ctrllog.Log.WithName("entrypoint")
 	ctx := ctrl.SetupSignalHandler()
 
-	setupLog.Info("initializing multicluster support", "namespace", namespace)
-
-	// Create standard manager options
-	mgmtOpts := manager.Options{
-		Scheme: scheme,
-	}
-
-	// First, create a standard controller-runtime manager
-	// This is for the conventional controller approach
-	mgr, err := ctrl.NewManager(config, mgmtOpts)
-	if err != nil {
-		setupLog.Error(err, "unable to start manager")
-		os.Exit(1)
-	}
-
-	// Now let's set up the multicluster part
-	// Create a MulticlusterReconciler that will be used by controllers and the provider
-	mcReconciler := kubeconfigprovider.reconciler(mgr.GetClient(), mgr.GetScheme())
-
-	// Create a KubeconfigClusterManager that will manage multiple clusters
-	clusterManager := kubeconfigprovider.manager(mgr, mcReconciler)
-
-	// Create and configure the kubeconfig provider with the cluster manager
-	kubeconfigProvider := kubeconfigprovider.New(
-		clusterManager,
+	// Create the kubeconfig provider
+	provider := kubeconfigprovider.New(
+		nil, // Will be set by mcmanager.New
 		kubeconfigprovider.Options{
 			Namespace:         namespace,
 			KubeconfigLabel:   kubeconfigLabel,
@@ -118,64 +77,80 @@ func main() {
 		},
 	)
 
-	// Start the provider in a background goroutine and wait for initial discovery
-	go func() {
-		setupLog.Info("starting kubeconfig provider")
+	// Create the multicluster manager with the provider
+	mgr, err := mcmanager.New(ctrl.GetConfigOrDie(), provider, manager.Options{})
+	if err != nil {
+		entryLog.Error(err, "unable to create manager")
+		os.Exit(1)
+	}
 
-		// Run the provider - it will handle initial sync internally
-		err := kubeconfigProvider.Run(ctx, clusterManager)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			setupLog.Error(err, "Error running provider")
-			os.Exit(1)
-		}
-	}()
+	// Set up a controller to list pods in each cluster
+	err = mgr.Add(mcreconcile.Func(
+		func(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+			log := ctrllog.Log.WithValues("cluster", req.ClusterName)
+			log.Info("Reconciling Pod")
 
-	// Wait for the provider to signal it's ready to start
+			cl, err := mgr.GetCluster(ctx, req.ClusterName)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+
+			// List pods in the default namespace
+			var pods corev1.PodList
+			if err := cl.GetClient().List(ctx, &pods, &client.ListOptions{
+				Namespace: "default",
+			}); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			log.Info("Listing pods in default namespace", "count", len(pods.Items))
+			for _, pod := range pods.Items {
+				log.Info("Found pod",
+					"namespace", pod.Namespace,
+					"name", pod.Name,
+					"status", pod.Status.Phase)
+			}
+
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		},
+	).ToController("pod-lister", mgr))
+
+	if err != nil {
+		entryLog.Error(err, "unable to create pod lister controller")
+		os.Exit(1)
+	}
+
+	// Starting everything
+	g, ctx := errgroup.WithContext(ctx)
+
+	// Wait for the provider to be ready before starting the manager
 	select {
-	case <-kubeconfigProvider.IsReady():
-		setupLog.Info("Kubeconfig provider starting...")
-	case <-time.After(5 * time.Second):
-		setupLog.Info("Timeout waiting for provider to start, continuing anyway")
-	}
-
-	// Now let's add a delay to allow provider to discover and connect to clusters
-	setupLog.Info("Waiting for provider to discover clusters...")
-
-	// TODO: set up your controllers for CRDs/CRs.
-	//   Below are examples for 'FailoverGroup' and 'Failover' CRs.
-
-	// Example of how controllers would be set up with scheme handling
-	// if err := (&controller.FailoverGroupReconciler{
-	// 	Client:       mgr.GetClient(),
-	// 	Scheme:       mgr.GetScheme(), // Get scheme from manager
-	// 	MCReconciler: mcReconciler,
-	// }).SetupWithManager(mgr); err != nil {
-	// 	setupLog.Error(err, "unable to create failovergroup controller", "controller", "FailoverGroup")
-	// 	os.Exit(1)
-	// }
-
-	// if err := (&controller.FailoverReconciler{
-	// 	Client:       mgr.GetClient(),
-	// 	Scheme:       mgr.GetScheme(), // Get scheme from manager
-	// 	MCReconciler: mcReconciler,
-	// }).SetupWithManager(mgr); err != nil {
-	// 	setupLog.Error(err, "unable to create failover controller", "controller", "Failover")
-	// 	os.Exit(1)
-	// }
-
-	// Setup healthz/readyz checks
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
-	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
+	case <-provider.IsReady():
+		entryLog.Info("Provider is ready")
+	case <-ctx.Done():
+		entryLog.Error(ctx.Err(), "context cancelled before provider was ready")
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager")
-	if err := mgr.Start(ctx); err != nil {
-		setupLog.Error(err, "problem running manager")
+	g.Go(func() error {
+		entryLog.Info("Starting provider")
+		return ignoreCanceled(provider.Run(ctx, mgr))
+	})
+
+	g.Go(func() error {
+		entryLog.Info("Starting manager")
+		return ignoreCanceled(mgr.Start(ctx))
+	})
+
+	if err := g.Wait(); err != nil {
+		entryLog.Error(err, "error running manager or provider")
 		os.Exit(1)
 	}
+}
+
+func ignoreCanceled(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
