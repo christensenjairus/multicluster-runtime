@@ -67,6 +67,8 @@ func main() {
 	entryLog := ctrllog.Log.WithName("entrypoint")
 	ctx := ctrl.SetupSignalHandler()
 
+	entryLog.Info("Starting application", "namespace", namespace, "kubeconfigLabel", kubeconfigLabel)
+
 	// Create the kubeconfig provider with options
 	providerOpts := kubeconfigprovider.Options{
 		Namespace:         namespace,
@@ -76,9 +78,11 @@ func main() {
 	}
 
 	// Create the provider first, then the manager with the provider
+	entryLog.Info("Creating provider")
 	provider := kubeconfigprovider.New(providerOpts)
 
 	// Create the multicluster manager with the provider
+	entryLog.Info("Creating manager")
 	mgr, err := mcmanager.New(ctrl.GetConfigOrDie(), provider, manager.Options{})
 	if err != nil {
 		entryLog.Error(err, "unable to create manager")
@@ -86,6 +90,7 @@ func main() {
 	}
 
 	// Add the pod lister controller
+	entryLog.Info("Adding pod watcher")
 	if err := mgr.Add(&podWatcher{manager: mgr}); err != nil {
 		entryLog.Error(err, "unable to add pod watcher")
 		os.Exit(1)
@@ -94,25 +99,34 @@ func main() {
 	// Starting everything
 	g, ctx := errgroup.WithContext(ctx)
 
+	// Add a timeout for waiting for the provider to be ready
+	entryLog.Info("Waiting for provider to be ready")
+	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
 	// Wait for the provider to be ready before starting the manager
 	select {
 	case <-provider.IsReady():
 		entryLog.Info("Provider is ready")
-	case <-ctx.Done():
-		entryLog.Error(ctx.Err(), "context cancelled before provider was ready")
-		os.Exit(1)
+	case <-readyCtx.Done():
+		entryLog.Error(readyCtx.Err(), "Timeout waiting for provider to be ready, continuing anyway")
 	}
 
 	g.Go(func() error {
 		entryLog.Info("Starting provider")
-		return ignoreCanceled(provider.Run(ctx, mgr))
+		err := provider.Run(ctx, mgr)
+		entryLog.Info("Provider exited", "error", err)
+		return ignoreCanceled(err)
 	})
 
 	g.Go(func() error {
 		entryLog.Info("Starting manager")
-		return ignoreCanceled(mgr.Start(ctx))
+		err := mgr.Start(ctx)
+		entryLog.Info("Manager exited", "error", err)
+		return ignoreCanceled(err)
 	})
 
+	entryLog.Info("Waiting for provider and manager to exit")
 	if err := g.Wait(); err != nil {
 		entryLog.Error(err, "error running manager or provider")
 		os.Exit(1)

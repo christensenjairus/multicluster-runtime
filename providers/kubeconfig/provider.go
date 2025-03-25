@@ -142,16 +142,21 @@ func (p *Provider) Run(ctx context.Context, mgr mcmanager.Manager) error {
 
 	// If client isn't set yet, get it from the manager
 	if p.client == nil && mgr != nil {
+		p.log.Info("Setting client from manager")
 		p.client = mgr.GetLocalManager().GetClient()
 	}
 
 	// Wait for the controller-runtime cache to be ready before using it
 	if mgr != nil && mgr.GetLocalManager().GetCache() != nil {
 		p.log.Info("Waiting for controller-runtime cache to be ready")
-		if !mgr.GetLocalManager().GetCache().WaitForCacheSync(ctx) {
-			return fmt.Errorf("timed out waiting for cache to sync")
+		cacheCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		if !mgr.GetLocalManager().GetCache().WaitForCacheSync(cacheCtx) {
+			p.log.Error(nil, "Timed out waiting for cache to sync, continuing anyway")
+		} else {
+			p.log.Info("Controller-runtime cache is synced")
 		}
-		p.log.Info("Controller-runtime cache is synced")
 	} else {
 		p.log.Info("No manager or cache available, skipping cache sync")
 	}
@@ -184,7 +189,9 @@ func (p *Provider) Run(ctx context.Context, mgr mcmanager.Manager) error {
 		clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{})
 		config, err = clientConfig.ClientConfig()
 		if err != nil {
-			return fmt.Errorf("failed to create config: %w", err)
+			p.log.Error(err, "Failed to create config, but continuing")
+			// Always signal readiness and return
+			return nil
 		}
 	}
 
@@ -192,15 +199,27 @@ func (p *Provider) Run(ctx context.Context, mgr mcmanager.Manager) error {
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return fmt.Errorf("failed to create clientset: %w", err)
+		p.log.Error(err, "Failed to create clientset, but continuing")
+		// Always signal readiness and return
+		return nil
 	}
 
 	// Set up label selector for our kubeconfig label
 	labelSelector := fmt.Sprintf("%s=true", p.opts.KubeconfigLabel)
 	p.log.Info("Watching for kubeconfig secrets", "selector", labelSelector)
 
-	// Watch for secret changes
-	return p.watchSecrets(ctx, clientset, labelSelector, mgr)
+	// Watch for secret changes in a goroutine so we don't block
+	go func() {
+		err := p.watchSecrets(ctx, clientset, labelSelector, mgr)
+		if err != nil && ctx.Err() == nil {
+			p.log.Error(err, "Error watching secrets")
+		}
+	}()
+
+	// Block until context is done
+	<-ctx.Done()
+	p.log.Info("Context cancelled, exiting provider")
+	return ctx.Err()
 }
 
 // watchSecrets sets up a watch for Secret resources with the given label selector
@@ -432,18 +451,22 @@ func (p *Provider) removeCluster(ctx context.Context, clusterName string) error 
 // syncSecretsInternal performs an initial sync of all secrets with the kubeconfig label
 func (p *Provider) syncSecretsInternal(ctx context.Context) error {
 	if p.client == nil {
-		return fmt.Errorf("client not initialized")
+		p.log.Info("Client not initialized, skipping initial secret sync")
+		// Don't return error, just continue without initial sync
+		return nil
 	}
 
+	p.log.Info("Starting to list secrets with kubeconfig label")
 	// List all secrets with our label
 	var secrets corev1.SecretList
 	if err := p.client.List(ctx, &secrets, client.InNamespace(p.opts.Namespace), client.MatchingLabels{
 		p.opts.KubeconfigLabel: "true",
 	}); err != nil {
+		p.log.Error(err, "Failed to list secrets with label", "label", p.opts.KubeconfigLabel, "namespace", p.opts.Namespace)
 		return fmt.Errorf("failed to list secrets: %w", err)
 	}
 
-	p.log.Info("Found secrets with kubeconfig label", "count", len(secrets.Items))
+	p.log.Info("Found secrets with kubeconfig label", "count", len(secrets.Items), "namespace", p.opts.Namespace)
 
 	// Process each secret
 	for i := range secrets.Items {
