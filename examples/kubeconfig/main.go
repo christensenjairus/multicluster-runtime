@@ -40,7 +40,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	kubeconfig "github.com/christensenjairus/multicluster-runtime/providers/kubeconfig"
+	kubeconfig "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
 
 	// +kubebuilder:scaffold:imports
 	"k8s.io/client-go/rest"
