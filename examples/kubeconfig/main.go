@@ -75,8 +75,10 @@ func main() {
 		CacheSyncTimeout:  cacheSyncTimeout,
 	}
 
-	// Create the multicluster manager with the provider
+	// Create the provider first, then the manager with the provider
 	provider := kubeconfigprovider.New(providerOpts)
+
+	// Create the multicluster manager with the provider
 	mgr, err := mcmanager.New(ctrl.GetConfigOrDie(), provider, manager.Options{})
 	if err != nil {
 		entryLog.Error(err, "unable to create manager")

@@ -69,12 +69,10 @@ func New(opts Options) *Provider {
 		opts.CacheSyncTimeout = 30 * time.Second
 	}
 
-	var client client.Client
-
 	return &Provider{
 		opts:        opts,
 		log:         log.Log.WithName("kubeconfig-provider"),
-		client:      client,
+		client:      nil, // Will be set in Run
 		clusters:    map[string]cluster.Cluster{},
 		cancelFns:   map[string]context.CancelFunc{},
 		seenHashes:  map[string]string{},
@@ -147,12 +145,6 @@ func (p *Provider) Run(ctx context.Context, mgr mcmanager.Manager) error {
 		p.client = mgr.GetLocalManager().GetClient()
 	}
 
-	// Signal that we're starting up
-	p.readyOnce.Do(func() {
-		p.log.Info("Signaling that KubeconfigProvider is ready to start")
-		close(p.readySignal)
-	})
-
 	// Wait for the controller-runtime cache to be ready before using it
 	if mgr != nil && mgr.GetLocalManager().GetCache() != nil {
 		p.log.Info("Waiting for controller-runtime cache to be ready")
@@ -171,6 +163,12 @@ func (p *Provider) Run(ctx context.Context, mgr mcmanager.Manager) error {
 	} else {
 		p.log.Info("Initial secret sync successful")
 	}
+
+	// Signal that we're ready AFTER we've attempted to sync secrets
+	p.readyOnce.Do(func() {
+		p.log.Info("Signaling that KubeconfigProvider is ready to start")
+		close(p.readySignal)
+	})
 
 	// Create a Kubernetes clientset for watching
 	var config *rest.Config
