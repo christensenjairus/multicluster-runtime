@@ -83,16 +83,18 @@ type Options struct {
 // KubeconfigProvider is a cluster provider that watches for secrets containing kubeconfig data
 // and engages clusters based on those kubeconfig.
 type KubeconfigProvider struct {
-	opts       Options
-	log        logr.Logger
-	client     client.Client
-	Client     client.Client // For controller-runtime Reconciler interface
-	lock       sync.RWMutex
-	manager    KubeClusterManager
-	clusters   map[string]cluster.Cluster
-	cancelFns  map[string]context.CancelFunc
-	indexers   []index
-	seenHashes map[string]string // tracks resource versions
+	opts        Options
+	log         logr.Logger
+	client      client.Client
+	Client      client.Client // For controller-runtime Reconciler interface
+	lock        sync.RWMutex
+	manager     KubeClusterManager
+	clusters    map[string]cluster.Cluster
+	cancelFns   map[string]context.CancelFunc
+	indexers    []index
+	seenHashes  map[string]string // tracks resource versions
+	readySignal chan struct{}     // Signal when provider is ready to start
+	readyOnce   sync.Once         // Ensure we only signal once
 }
 
 // Ensure KubeconfigProvider implements the Provider interface
@@ -115,13 +117,14 @@ func New(mgr KubeClusterManager, opts Options) *KubeconfigProvider {
 	}
 
 	return &KubeconfigProvider{
-		opts:       opts,
-		log:        log.Log.WithName("kubeconfig-provider"),
-		client:     mgr.GetClient(),
-		Client:     mgr.GetClient(), // Set both client fields
-		clusters:   map[string]cluster.Cluster{},
-		cancelFns:  map[string]context.CancelFunc{},
-		seenHashes: map[string]string{},
+		opts:        opts,
+		log:         log.Log.WithName("kubeconfig-provider"),
+		client:      mgr.GetClient(),
+		Client:      mgr.GetClient(), // Set both client fields
+		clusters:    map[string]cluster.Cluster{},
+		cancelFns:   map[string]context.CancelFunc{},
+		seenHashes:  map[string]string{},
+		readySignal: make(chan struct{}),
 	}
 }
 
@@ -145,6 +148,12 @@ func (p *KubeconfigProvider) Run(ctx context.Context, mgr KubeClusterManager) er
 
 	// Set the manager
 	p.SetManager(mgr)
+
+	// Signal that we're starting up (this doesn't mean clusters are ready, just that we're starting)
+	p.readyOnce.Do(func() {
+		p.log.Info("Signaling that KubeconfigProvider is ready to start")
+		close(p.readySignal)
+	})
 
 	// Wait for the controller-runtime cache to be ready before using it
 	if mgr != nil && mgr.GetCache() != nil {
@@ -632,4 +641,10 @@ func (p *KubeconfigProvider) SetManager(mgr KubeClusterManager) {
 
 	p.manager = mgr
 	p.log.Info("Manager explicitly set for provider")
+}
+
+// IsReady returns a channel that will be closed when the provider is ready to start
+// This separates the readiness signal from the main function
+func (p *KubeconfigProvider) IsReady() <-chan struct{} {
+	return p.readySignal
 }

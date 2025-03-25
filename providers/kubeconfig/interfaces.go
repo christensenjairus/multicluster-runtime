@@ -71,4 +71,7 @@ type Provider interface {
 
 	// IndexField indexes a field on all clusters
 	IndexField(ctx context.Context, obj client.Object, field string, extractValue client.IndexerFunc) error
+
+	// IsReady returns a channel that will be closed when the provider is ready to start
+	IsReady() <-chan struct{}
 }

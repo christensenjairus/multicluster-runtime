@@ -18,7 +18,7 @@ package main
 
 import (
 	"context"
-	
+
 	"errors"
 	"flag"
 	"os"
@@ -89,9 +89,8 @@ func main() {
 
 	// Create standard manager options
 	mgmtOpts := manager.Options{
-		Scheme:                 scheme,
+		Scheme: scheme,
 	}
-
 
 	// First, create a standard controller-runtime manager
 	// This is for the conventional controller approach
@@ -114,23 +113,17 @@ func main() {
 		kubeconfigprovider.Options{
 			Namespace:         namespace,
 			KubeconfigLabel:   kubeconfigLabel,
-			Scheme:            scheme,
 			ConnectionTimeout: connectionTimeout,
 			CacheSyncTimeout:  cacheSyncTimeout,
 		},
 	)
 
 	// Start the provider in a background goroutine and wait for initial discovery
-	providerReady := make(chan struct{})
 	go func() {
 		setupLog.Info("starting kubeconfig provider")
 
 		// Set the manager first before doing anything else
 		kubeconfigProvider.SetManager(clusterManager)
-
-		// Signal that we're going to start the provider
-		// This doesn't mean clusters are actually ready yet, just that we're starting
-		close(providerReady)
 
 		// Run the provider - it will handle initial sync internally
 		err := kubeconfigProvider.Run(ctx, clusterManager)
@@ -140,9 +133,9 @@ func main() {
 		}
 	}()
 
-	// Wait for the provider to start
+	// Wait for the provider to signal it's ready to start
 	select {
-	case <-providerReady:
+	case <-kubeconfigProvider.IsReady():
 		setupLog.Info("Kubeconfig provider starting...")
 	case <-time.After(5 * time.Second):
 		setupLog.Info("Timeout waiting for provider to start, continuing anyway")
@@ -154,9 +147,10 @@ func main() {
 	// TODO: set up your controllers for CRDs/CRs.
 	//   Below are examples for 'FailoverGroup' and 'Failover' CRs.
 
+	// Example of how controllers would be set up with scheme handling
 	// if err := (&controller.FailoverGroupReconciler{
 	// 	Client:       mgr.GetClient(),
-	// 	Scheme:       mgr.GetScheme(),
+	// 	Scheme:       mgr.GetScheme(), // Get scheme from manager
 	// 	MCReconciler: mcReconciler,
 	// }).SetupWithManager(mgr); err != nil {
 	// 	setupLog.Error(err, "unable to create failovergroup controller", "controller", "FailoverGroup")
@@ -165,7 +159,7 @@ func main() {
 
 	// if err := (&controller.FailoverReconciler{
 	// 	Client:       mgr.GetClient(),
-	// 	Scheme:       mgr.GetScheme(),
+	// 	Scheme:       mgr.GetScheme(), // Get scheme from manager
 	// 	MCReconciler: mcReconciler,
 	// }).SetupWithManager(mgr); err != nil {
 	// 	setupLog.Error(err, "unable to create failover controller", "controller", "Failover")
