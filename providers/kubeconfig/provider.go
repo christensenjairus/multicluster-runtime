@@ -68,6 +68,9 @@ func New(opts Options) *Provider {
 	if opts.CacheSyncTimeout == 0 {
 		opts.CacheSyncTimeout = 30 * time.Second
 	}
+	if opts.ProviderReadyTimeout == 0 {
+		opts.ProviderReadyTimeout = 120 * time.Second // for multiple clusters, this can take a while, because it tests every one.
+	}
 
 	return &Provider{
 		opts:        opts,
@@ -96,6 +99,9 @@ type Options struct {
 
 	// CacheSyncTimeout is the timeout for waiting for the cache to sync
 	CacheSyncTimeout time.Duration
+
+	// ProviderReadyTimeout is the timeout for waiting for the provider to be ready
+	ProviderReadyTimeout time.Duration
 }
 
 type index struct {
@@ -149,7 +155,7 @@ func (p *Provider) Run(ctx context.Context, mgr mcmanager.Manager) error {
 	// Wait for the controller-runtime cache to be ready before using it
 	if mgr != nil && mgr.GetLocalManager().GetCache() != nil {
 		p.log.Info("Waiting for controller-runtime cache to be ready")
-		cacheCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		cacheCtx, cancel := context.WithTimeout(ctx, p.opts.CacheSyncTimeout)
 		defer cancel()
 
 		if !mgr.GetLocalManager().GetCache().WaitForCacheSync(cacheCtx) {
