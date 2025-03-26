@@ -57,7 +57,7 @@ func main() {
 	flag.StringVar(&kubeconfigPath, "kubeconfig-path", "",
 		"Path to kubeconfig file for test secrets (defaults to ~/.kube/config if not set)")
 	flag.DurationVar(&providerReadyTimeout, "provider-ready-timeout", 120*time.Second,
-		"Timeout for waiting for the provider to be ready")	
+		"Timeout for waiting for the provider to be ready")
 
 	opts := zap.Options{
 		Development: true,
@@ -91,8 +91,6 @@ func main() {
 	managerOpts := manager.Options{
 		// Don't block main thread on leader election
 		LeaderElection:          false,
-		LeaderElectionNamespace: namespace,
-		LeaderElectionID:        "multicluster-runtime-kubeconfig-leader",
 	}
 
 	mgr, err := mcmanager.New(ctrl.GetConfigOrDie(), provider, managerOpts)

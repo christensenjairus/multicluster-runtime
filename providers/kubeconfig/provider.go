@@ -70,6 +70,9 @@ func New(opts Options) *Provider {
 	if opts.CacheSyncTimeout == 0 {
 		opts.CacheSyncTimeout = 30 * time.Second
 	}
+	if opts.KubeconfigPath == "" {
+		opts.KubeconfigPath = filepath.Join(os.Getenv("HOME"), ".kube", "config")
+	}
 
 	return &Provider{
 		opts:        opts,
@@ -292,22 +295,11 @@ func (p *Provider) createTestSecretIfMissing(ctx context.Context, clientset kube
 	}
 
 	// Get current kubeconfig for test purposes
-	var kubeconfigPath string
-	if p.opts.KubeconfigPath != "" {
-		kubeconfigPath = p.opts.KubeconfigPath
-		p.log.Info("Using provided kubeconfig path", "path", kubeconfigPath)
-	} else {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("failed to get home directory: %w", err)
-		}
-		kubeconfigPath = filepath.Join(homeDir, ".kube", "config")
-		p.log.Info("Using default kubeconfig path", "path", kubeconfigPath)
-	}
+	p.log.Info("Using kubeconfig path", "path", p.opts.KubeconfigPath)
 
-	kubeconfigData, err := os.ReadFile(kubeconfigPath)
+	kubeconfigData, err := os.ReadFile(p.opts.KubeconfigPath)
 	if err != nil {
-		return fmt.Errorf("failed to read kubeconfig: %w", err)
+		return fmt.Errorf("failed to read kubeconfig from %s: %w", p.opts.KubeconfigPath, err)
 	}
 
 	// Create test secret
