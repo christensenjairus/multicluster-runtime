@@ -229,17 +229,17 @@ func (p *Provider) Run(ctx context.Context, mgr mcmanager.Manager) error {
 	p.log.Info("Watching for kubeconfig secrets", "selector", labelSelector, "namespace", p.opts.Namespace)
 
 	// Watch for secret changes in a goroutine to avoid blocking
-	watchCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	go func() {
 		for {
-			if watchCtx.Err() != nil {
+			// Check if parent context is done
+			if ctx.Err() != nil {
 				return
 			}
 
-			err := p.watchSecrets(watchCtx, clientset, labelSelector, mgr)
-			if watchCtx.Err() != nil {
+			err := p.watchSecrets(ctx, clientset, labelSelector, mgr)
+
+			// Check again for context cancellation after watch returns
+			if ctx.Err() != nil {
 				return
 			}
 
