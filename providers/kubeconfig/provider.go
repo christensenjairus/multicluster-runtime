@@ -23,7 +23,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -99,6 +98,10 @@ type Options struct {
 
 	// CacheSyncTimeout is the timeout for waiting for the cache to sync
 	CacheSyncTimeout time.Duration
+
+	// KubeconfigPath is the path to the kubeconfig file to use for development/testing
+	// If not set, will use the default ~/.kube/config
+	KubeconfigPath string
 }
 
 type index struct {
@@ -289,13 +292,20 @@ func (p *Provider) createTestSecretIfMissing(ctx context.Context, clientset kube
 	}
 
 	// Get current kubeconfig for test purposes
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("failed to get home directory: %w", err)
+	var kubeconfigPath string
+	if p.opts.KubeconfigPath != "" {
+		kubeconfigPath = p.opts.KubeconfigPath
+		p.log.Info("Using provided kubeconfig path", "path", kubeconfigPath)
+	} else {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("failed to get home directory: %w", err)
+		}
+		kubeconfigPath = filepath.Join(homeDir, ".kube", "config")
+		p.log.Info("Using default kubeconfig path", "path", kubeconfigPath)
 	}
 
-	kubeconfigPath := filepath.Join(homeDir, ".kube", "config")
-	kubeconfigData, err := ioutil.ReadFile(kubeconfigPath)
+	kubeconfigData, err := os.ReadFile(kubeconfigPath)
 	if err != nil {
 		return fmt.Errorf("failed to read kubeconfig: %w", err)
 	}
@@ -429,7 +439,7 @@ func (p *Provider) handleSecret(ctx context.Context, secret *corev1.Secret, mgr 
 	// If the cluster already exists, remove it first
 	if clusterExists {
 		log.Info("Cluster already exists, updating it")
-		if err := p.removeCluster(ctx, clusterName); err != nil {
+		if err := p.removeCluster(clusterName); err != nil {
 			return fmt.Errorf("failed to remove existing cluster: %w", err)
 		}
 	}
@@ -507,13 +517,13 @@ func (p *Provider) handleSecretDelete(secret *corev1.Secret) {
 	log.Info("Handling deleted secret")
 
 	// Remove the cluster
-	if err := p.removeCluster(context.Background(), clusterName); err != nil {
+	if err := p.removeCluster(clusterName); err != nil {
 		log.Error(err, "Failed to remove cluster")
 	}
 }
 
 // removeCluster removes a cluster by name
-func (p *Provider) removeCluster(ctx context.Context, clusterName string) error {
+func (p *Provider) removeCluster(clusterName string) error {
 	log := p.log.WithValues("cluster", clusterName)
 	log.Info("Removing cluster")
 

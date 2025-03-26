@@ -44,6 +44,7 @@ func main() {
 	var kubeconfigLabel string
 	var connectionTimeout time.Duration
 	var cacheSyncTimeout time.Duration
+	var kubeconfigPath string
 	var providerReadyTimeout time.Duration
 
 	flag.StringVar(&namespace, "namespace", "default", "Namespace where kubeconfig secrets are stored")
@@ -53,6 +54,8 @@ func main() {
 		"Timeout for connecting to a cluster")
 	flag.DurationVar(&cacheSyncTimeout, "cache-sync-timeout", 60*time.Second,
 		"Timeout for waiting for the cache to sync")
+	flag.StringVar(&kubeconfigPath, "kubeconfig-path", "",
+		"Path to kubeconfig file for test secrets (defaults to ~/.kube/config if not set)")
 	flag.DurationVar(&providerReadyTimeout, "provider-ready-timeout", 120*time.Second,
 		"Timeout for waiting for the provider to be ready")	
 
@@ -70,11 +73,11 @@ func main() {
 
 	// Create the kubeconfig provider with options
 	providerOpts := kubeconfigprovider.Options{
-		Namespace:            namespace,
-		KubeconfigLabel:      kubeconfigLabel,
-		ConnectionTimeout:    connectionTimeout,
-		CacheSyncTimeout:     cacheSyncTimeout,
-		ProviderReadyTimeout: providerReadyTimeout,
+		Namespace:         namespace,
+		KubeconfigLabel:   kubeconfigLabel,
+		ConnectionTimeout: connectionTimeout,
+		CacheSyncTimeout:  cacheSyncTimeout,
+		KubeconfigPath:    kubeconfigPath,
 	}
 
 	// Create the provider first, then the manager with the provider
