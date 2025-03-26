@@ -44,6 +44,7 @@ func main() {
 	var kubeconfigLabel string
 	var connectionTimeout time.Duration
 	var cacheSyncTimeout time.Duration
+	var providerReadyTimeout time.Duration
 
 	flag.StringVar(&namespace, "namespace", "default", "Namespace where kubeconfig secrets are stored")
 	flag.StringVar(&kubeconfigLabel, "kubeconfig-label", "sigs.k8s.io/multicluster-runtime-kubeconfig",
@@ -52,6 +53,8 @@ func main() {
 		"Timeout for connecting to a cluster")
 	flag.DurationVar(&cacheSyncTimeout, "cache-sync-timeout", 60*time.Second,
 		"Timeout for waiting for the cache to sync")
+	flag.DurationVar(&providerReadyTimeout, "provider-ready-timeout", 120*time.Second,
+		"Timeout for waiting for the provider to be ready")	
 
 	opts := zap.Options{
 		Development: true,
@@ -67,10 +70,11 @@ func main() {
 
 	// Create the kubeconfig provider with options
 	providerOpts := kubeconfigprovider.Options{
-		Namespace:         namespace,
-		KubeconfigLabel:   kubeconfigLabel,
-		ConnectionTimeout: connectionTimeout,
-		CacheSyncTimeout:  cacheSyncTimeout,
+		Namespace:            namespace,
+		KubeconfigLabel:      kubeconfigLabel,
+		ConnectionTimeout:    connectionTimeout,
+		CacheSyncTimeout:     cacheSyncTimeout,
+		ProviderReadyTimeout: providerReadyTimeout,
 	}
 
 	// Create the provider first, then the manager with the provider
@@ -115,7 +119,7 @@ func main() {
 
 	// Wait for the provider to be ready with a short timeout
 	entryLog.Info("Waiting for provider to be ready")
-	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	readyCtx, cancel := context.WithTimeout(ctx, providerReadyTimeout)
 	defer cancel()
 
 	select {
