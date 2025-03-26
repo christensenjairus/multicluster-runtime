@@ -56,7 +56,7 @@ const (
 var _ multicluster.Provider = &Provider{}
 
 // New creates a new Kubeconfig Provider.
-func New(opts Options) *Provider {
+func New(opts Options, clusterOpts ...cluster.Option) *Provider {
 	// Set defaults
 	if opts.KubeconfigLabel == "" {
 		opts.KubeconfigLabel = DefaultKubeconfigSecretLabel
@@ -82,6 +82,7 @@ func New(opts Options) *Provider {
 		cancelFns:   map[string]context.CancelFunc{},
 		seenHashes:  map[string]string{},
 		readySignal: make(chan struct{}),
+		clusterOpts: clusterOpts,
 	}
 }
 
@@ -126,6 +127,7 @@ type Provider struct {
 	seenHashes  map[string]string // tracks resource versions
 	readySignal chan struct{}     // Signal when provider is ready to start
 	readyOnce   sync.Once         // Ensure we only signal once
+	clusterOpts []cluster.Option  // Options to apply to all clusters
 }
 
 // IsReady returns a channel that will be closed when the provider is ready to start
@@ -436,16 +438,16 @@ func (p *Provider) handleSecret(ctx context.Context, secret *corev1.Secret, mgr 
 		}
 	}
 
-	// Create a new cluster
+	// Create a new cluster with the provided options
 	log.Info("Creating new cluster from kubeconfig")
-	cl, err := cluster.New(restConfig)
+	cl, err := cluster.New(restConfig, p.clusterOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to create cluster: %w", err)
 	}
 
 	// Apply any field indexers
 	for _, idx := range p.indexers {
-		if err := cl.GetFieldIndexer().IndexField(ctx, idx.object, idx.field, idx.extractValue); err != nil {
+		if err := cl.GetCache().IndexField(ctx, idx.object, idx.field, idx.extractValue); err != nil {
 			return fmt.Errorf("failed to index field %q: %w", idx.field, err)
 		}
 	}
@@ -564,7 +566,7 @@ func (p *Provider) IndexField(ctx context.Context, obj client.Object, field stri
 
 	// Apply to existing clusters
 	for name, cl := range p.clusters {
-		if err := cl.GetFieldIndexer().IndexField(ctx, obj, field, extractValue); err != nil {
+		if err := cl.GetCache().IndexField(ctx, obj, field, extractValue); err != nil {
 			return fmt.Errorf("failed to index field %q on cluster %q: %w", field, name, err)
 		}
 	}
